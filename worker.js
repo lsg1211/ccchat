@@ -74,6 +74,8 @@ export class ChatRoom extends DurableObject {
     // 老库兼容：没有 quote 列则补上
     try { this.sql.exec('ALTER TABLE messages ADD COLUMN quote TEXT'); } catch {}
     try { this.sql.exec('ALTER TABLE messages ADD COLUMN av TEXT'); } catch {}
+    // 稳定身份：改名后仍能认出自己的历史消息（按 uid 判断归属，而不是昵称）
+    try { this.sql.exec('ALTER TABLE messages ADD COLUMN uid TEXT'); } catch {}
     // 网络表情搜索缓存（同一关键词缓存 12 小时，避免第三方接口限流）
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS sticker_cache (
@@ -208,18 +210,19 @@ export class ChatRoom extends DurableObject {
     const nick = decodeURIComponent(url.searchParams.get('nick') || '匿名').slice(0, 20) || '匿名';
     const color = /^#[0-9a-fA-F]{6}$/.test(url.searchParams.get('color') || '') ? url.searchParams.get('color') : '#6a8caf';
     const av = String(url.searchParams.get('av') || '').slice(0, 16);
+    const clientUid = String(url.searchParams.get('uid') || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
     // cid：每次连接的唯一标识，通话信令按 cid 精确路由，避免重名冲突
     const cid = uid().replace(/-/g, '').slice(0, 12);
-    server.serializeAttachment({ nick, color, av, cid, joinedAt: now() });
+    server.serializeAttachment({ nick, color, av, uid: clientUid, cid, joinedAt: now() });
     server.send(JSON.stringify({ type: 'self', cid }));
 
     // 向新连接推送历史
     const history = this.sql.exec('SELECT * FROM messages ORDER BY ts ASC LIMIT 500').toArray()
-      .map(r => ({ id: r.id, nick: r.nick, color: r.color, av: r.av || '', kind: r.kind, content: r.content, ts: r.ts, quote: r.quote || null }));
+      .map(r => ({ id: r.id, nick: r.nick, color: r.color, av: r.av || '', uid: r.uid || '', kind: r.kind, content: r.content, ts: r.ts, quote: r.quote || null }));
     server.send(JSON.stringify({ type: 'history', messages: history }));
 
     // 系统欢迎消息（只推送，不入库，避免每次连接都刷屏）
@@ -278,6 +281,10 @@ export class ChatRoom extends DurableObject {
       if (data.nick) a.nick = String(data.nick).slice(0, 20);
       if (data.avatar !== undefined) a.av = String(data.avatar || '').slice(0, 16);
       ws.serializeAttachment(a);
+      // 改名后把本人历史消息的昵称一并刷新（按 uid 定位，不影响别人）
+      if (data.nick && a.uid) {
+        try { this.sql.exec('UPDATE messages SET nick=? WHERE uid=?', a.nick, a.uid); } catch {}
+      }
       this.broadcastPresence();
       return;
     }
@@ -321,12 +328,13 @@ export class ChatRoom extends DurableObject {
       };
     }
     const av = String(data.avatar || who.av || '').slice(0, 16);
-    const msg = { id: uid(), nick: who.nick, color: who.color, av, kind, content, ts: now(), quote };
+    const msgUid = String(who.uid || data.uid || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
+    const msg = { id: uid(), nick: who.nick, color: who.color, av, uid: msgUid, kind, content, ts: now(), quote };
 
     // 入库
     this.sql.exec(
-      'INSERT INTO messages(id,nick,color,av,kind,content,ts,quote) VALUES(?,?,?,?,?,?,?,?)',
-      msg.id, msg.nick, msg.color, msg.av, msg.kind, msg.content, msg.ts, quote ? JSON.stringify(quote) : null
+      'INSERT INTO messages(id,nick,color,av,uid,kind,content,ts,quote) VALUES(?,?,?,?,?,?,?,?,?)',
+      msg.id, msg.nick, msg.color, msg.av, msg.uid, msg.kind, msg.content, msg.ts, quote ? JSON.stringify(quote) : null
     );
     // 广播给所有人（含发送者，前端按 id 去重）
     this.broadcast({ type: 'message', message: msg });
