@@ -196,7 +196,7 @@ export class ChatRoom extends DurableObject {
     if (url.pathname === '/presence') {
       const members = this.ctx.getWebSockets().map(ws => {
         const a = ws.deserializeAttachment() || {};
-        return { nick: a.nick || '匿名', color: a.color || '#6a8caf', av: a.av || '', cid: a.cid || '' };
+        return { nick: a.nick || '匿名', color: a.color || '#6a8caf', av: a.av || '', uid: a.uid || '', cid: a.cid || '' };
       });
       return new Response(JSON.stringify({ count: members.length, members }), {
         headers: { 'Content-Type': 'application/json' }
@@ -275,17 +275,61 @@ export class ChatRoom extends DurableObject {
       return;
     }
 
-    // 更新个人资料（头像/昵称），实时广播在线成员（改名换头像即时同步）
+    // 更新个人资料（昵称/头像）：支持改任何人，全员同步，历史消息一并刷新
+    //  - 不带目标 = 改自己
+    //  - 带 targetUid / targetNick = 改那个人（找到在线成员就同步改其身份，找不到只改库）
     if (data?.type === 'profile') {
       const a = ws.deserializeAttachment() || {};
-      if (data.nick) a.nick = String(data.nick).slice(0, 20);
-      if (data.avatar !== undefined) a.av = String(data.avatar || '').slice(0, 16);
-      ws.serializeAttachment(a);
-      // 改名后把本人历史消息的昵称一并刷新（按 uid 定位，不影响别人）
-      if (data.nick && a.uid) {
-        try { this.sql.exec('UPDATE messages SET nick=? WHERE uid=?', a.nick, a.uid); } catch {}
+      const finalNick = String(data.nick || '').slice(0, 20);
+      const finalAv = data.avatar !== undefined ? String(data.avatar || '').slice(0, 16) : undefined;
+      const targetUid = String(data.targetUid || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
+      const targetNick = String(data.targetNick || '').slice(0, 20);
+      const isOther = !!(targetUid || targetNick);
+      let resolvedUid = a.uid || '', from = a.nick || '', nickChanged = false, avChanged = false;
+
+      if (isOther) {
+        let found = false;
+        for (const w2 of this.ctx.getWebSockets()) {
+          const b = w2.deserializeAttachment() || {};
+          if ((targetUid && b.uid === targetUid) || (!targetUid && targetNick && b.nick === targetNick)) {
+            found = true;
+            from = b.nick || '';
+            resolvedUid = b.uid || targetUid || '';
+            if (finalNick && finalNick !== b.nick) { b.nick = finalNick; nickChanged = true; }
+            if (finalAv !== undefined && finalAv !== b.av) { b.av = finalAv; avChanged = true; }
+            w2.serializeAttachment(b);
+            break;
+          }
+        }
+        if (!found) {
+          from = targetNick;
+          resolvedUid = targetUid || '';
+          if (finalNick && finalNick !== targetNick) nickChanged = true;
+          if (finalAv !== undefined) avChanged = true;
+        }
+      } else {
+        from = a.nick || '';
+        resolvedUid = a.uid || '';
+        if (finalNick && finalNick !== a.nick) { a.nick = finalNick; nickChanged = true; }
+        if (finalAv !== undefined && finalAv !== a.av) { a.av = finalAv; avChanged = true; }
+        ws.serializeAttachment(a);
       }
+
+      // 历史消息一并刷新：优先按 uid 精确匹配；没有 uid 的老消息按旧昵称兜底
+      try {
+        if (nickChanged && finalNick) {
+          if (resolvedUid) this.sql.exec("UPDATE messages SET nick=? WHERE uid=? OR ((uid IS NULL OR uid='') AND nick=?)", finalNick, resolvedUid, from);
+          else if (from) this.sql.exec('UPDATE messages SET nick=? WHERE nick=?', finalNick, from);
+        }
+        if (avChanged && finalAv !== undefined) {
+          if (resolvedUid) this.sql.exec("UPDATE messages SET av=? WHERE uid=? OR ((uid IS NULL OR uid='') AND nick=?)", finalAv, resolvedUid, from);
+          else if (from) this.sql.exec('UPDATE messages SET av=? WHERE nick=?', finalAv, from);
+        }
+      } catch {}
+
+      // 全员广播：各客户端即时刷新已渲染消息的昵称/头像（不用重进）
       this.broadcastPresence();
+      this.broadcast({ type: 'profile', uid: resolvedUid || '', from: from || '', nick: finalNick || '', avatar: finalAv });
       return;
     }
 
@@ -423,7 +467,7 @@ export class ChatRoom extends DurableObject {
   broadcastPresence() {
     const members = this.ctx.getWebSockets().map(ws => {
       const a = ws.deserializeAttachment() || {};
-      return { nick: a.nick || '匿名', color: a.color || '#6a8caf', av: a.av || '', cid: a.cid || '' };
+      return { nick: a.nick || '匿名', color: a.color || '#6a8caf', av: a.av || '', uid: a.uid || '', cid: a.cid || '' };
     });
     this.broadcast({ type: 'presence', members, count: members.length });
   }
