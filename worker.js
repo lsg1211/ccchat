@@ -366,6 +366,8 @@ export class ChatRoom extends DurableObject {
     let quote = null;
     if (data.quote && typeof data.quote === 'object') {
       quote = {
+        // 被引用消息的 id：客户端据此 data-qid 定位原文，必须持久化下发
+        id: String(data.quote.id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40),
         nick: String(data.quote.nick || '').slice(0, 20),
         kind: String(data.quote.kind || 'text').slice(0, 20),
         content: serialize(data.quote.content).slice(0, 200)
@@ -729,8 +731,8 @@ export default {
 // 简单 HTML 实体解码 + 标签剥离（小说正文清洗用）
 function stripHtml(s) {
   return String(s || '')
-    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/ /g, ' ').replace(/&/g, '&').replace(/</g, '<')
+    .replace(/>/g, '>').replace(/"/g, '"').replace(/'/g, "'")
     .replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n')
     .replace(/<[^>]+>/g, '').replace(/\r/g, '');
 }
@@ -769,8 +771,8 @@ const NEWS_CATS = { rec: '推荐', news: '要闻', tech: '科技', finance: '财
 function cleanArticleHtml(raw) {
   let h = String(raw || '')
     .replace(/<!\[CDATA\[|\]\]>/g, '')
-    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+    .replace(/</g, '<').replace(/>/g, '>').replace(/"/g, '"')
+    .replace(/'|'/g, "'").replace(/ /g, ' ').replace(/&/g, '&');
   // 去整块脚本/样式/iframe
   h = h.replace(/<script[\s\S]*?<\/script>/gi, '')
        .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -810,7 +812,7 @@ function parseRSS(xml, sourceName) {
     // 正文 HTML：优先用 content:encoded（通常更全），其次 description
     const fullRaw = g('content:encoded') || g('description') || '';
     const full = cleanArticleHtml(fullRaw);
-    const htmlRaw = descRaw.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    const htmlRaw = descRaw.replace(/</g, '<').replace(/>/g, '>');
     const imgs = [];
     const imRe = /<img[^>]+src=["']([^"']+\.(?:jpg|jpeg|png|webp)[^"']*)["']/gi;
     let im;
@@ -881,8 +883,8 @@ function cleanNovelText(raw) {
   return String(raw || '')
     .replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n')
     .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/ /g, ' ').replace(/&/g, '&').replace(/</g, '<')
+    .replace(/>/g, '>').replace(/"/g, '"').replace(/'/g, "'")
     .replace(/\r/g, '').split('\n').map(x => x.replace(/\u3000/g, ' ').trim())
     .filter(x => x && !/章节错误|点此举报|请记住|手机阅读|最新网址|手机站|www\.|\.com|百度搜索|笔趣阁.*收录|侵权.*删除|全屏阅读|加入书签/i.test(x))
     .join('\n').trim();
