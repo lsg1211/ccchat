@@ -386,8 +386,11 @@ export class ChatRoom extends DurableObject {
     this.broadcast({ type: 'message', message: msg });
 
     // 离线成员走极光推送（固定文案，隐私不含内容）
-    // 记录发送者昵称到"注册用户"表，用于给从未在线过的成员也能推送
-    this.ctx.waitUntil(this.pushOfflineMembers(msg));
+    // 同步类消息（ticker 语录 / anniv 纪念日）不推通知，避免设置动作制造空通知
+    const SYNC_KINDS = new Set(['ticker', 'anniv']);
+    if (!SYNC_KINDS.has(kind)) {
+      this.ctx.waitUntil(this.pushOfflineMembers(msg));
+    }
   }
 
   /* 给所有"离线"的历史成员推一条通知：排除发送者本人 + 当前在线者
